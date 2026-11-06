@@ -591,6 +591,10 @@ enum class StrId : uint16_t {
   STR_EMERGENCY_PHONE,
   STR_EDIT,
   STR_SHOW_QR,
+  STR_MENU,
+  STR_GO_TO_PAGE,
+  STR_ZOOM_MODE,
+  STR_PAGE_STEP_HINT,
   // Sentinel - must be last
   _COUNT
 };
