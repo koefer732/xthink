@@ -22,8 +22,10 @@
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/OtaBootSwitch.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -235,6 +237,9 @@ void setup() {
 
   HalSystem::begin();
   gpio.begin();
+  // Back + Up held at power-on: reboot into the other OTA slot (the previous firmware).
+  // First thing after GPIO init so it still works if later boot code is broken.
+  ota_boot::checkEscapeCombo();
   powerManager.begin();
 
 #ifdef ENABLE_SERIAL_LOG
@@ -268,6 +273,11 @@ void setup() {
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
   const auto wakeupReason = gpio.getWakeupReason();
+  // Up held while pressing Power: open the SD firmware picker instead of the normal UI.
+  // Same combo as CrossPoint, so a USB-locked X4 always has a way to reflash.
+  gpio.update();
+  const bool recoveryFirmwareMode =
+      wakeupReason == HalGPIO::WakeupReason::PowerButton && gpio.isPressed(HalGPIO::BTN_UP);
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       // A power-button wake always boots. We don't gate on hold duration: on a battery cold-boot
@@ -296,6 +306,14 @@ void setup() {
 
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
+
+  if (recoveryFirmwareMode) {
+    LOG_INF("MAIN", "Recovery firmware mode (UP + POWER held at boot)");
+    activityManager.replaceActivity(
+        std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+    waitForPowerRelease();
+    return;
+  }
 
   // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
   // crashed (indicated by readerActivityLoadCount > 0)

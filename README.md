@@ -60,6 +60,32 @@ and a USB-C data cable.
 > device's existing bootloader and partition table. Use the merged image below
 > only with esptool.
 
+### USB-locked X4 (no USB serial) — install from the SD card
+
+Some X4 units (mostly bought from Chinese stores) never show up as a USB serial
+port, so the web flasher and esptool cannot reach them. On those units the SD
+card is the only way in, and the firmware that is running is what reads the SD
+card. This build keeps that path open:
+
+1. Install [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader)
+   first with its SD installer (or the OTA Unlocker), if it is not there yet.
+2. Copy **`firmware.bin`** (the app image, **not** the merged image) to the root
+   of the FAT32 SD card. Any name ending in `.bin` works.
+3. In CrossPoint open **Settings → System → SD Card Firmware Update** (or hold
+   **Up** while pressing **Power**), pick the file and confirm. Do not power off.
+
+The update is written into the *other* OTA slot, so the previous firmware stays
+on the device. Safety nets in this build:
+
+| Combo at power-on | What it does |
+| --- | --- |
+| **Up** held while pressing **Power** | Opens the SD firmware picker (recovery mode), same as CrossPoint |
+| **Back + Up** held while pressing **Power** | Reboots into the other OTA slot (the previous firmware, e.g. CrossPoint) without reflashing |
+
+The same SD update is also under **Settings → System → SD Card Firmware Update**.
+"Check for updates" (OTA) looks at this fork's releases only, so it never pulls
+upstream firmware that lacks the SD update path.
+
 ### Easy install — single .bin via esptool
 
 Prefer the command line? This flashes everything (bootloader + partition table
