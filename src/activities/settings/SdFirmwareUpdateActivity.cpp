@@ -230,11 +230,10 @@ void SdFirmwareUpdateActivity::render(RenderLock&&) {
       }
       const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
       const int contentHeight = pageHeight - contentTop - metrics.buttonHintsHeight - metrics.verticalSpacing * 2;
-      GUI.drawList(renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(files.size()),
-                   selectedIndex, [this](int i) { return baseName(files[i]); },
-                   [this](int i) { return files[i]; });
-      const auto labels =
-          mappedInput.mapLabels(recoveryMode ? tr(STR_RETRY) : tr(STR_BACK), tr(STR_SELECT), "^", "v");
+      GUI.drawList(
+          renderer, Rect{0, contentTop, pageWidth, contentHeight}, static_cast<int>(files.size()), selectedIndex,
+          [this](int i) { return baseName(files[i]); }, [this](int i) { return files[i]; });
+      const auto labels = mappedInput.mapLabels(recoveryMode ? tr(STR_RETRY) : tr(STR_BACK), tr(STR_SELECT), "^", "v");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       break;
     }
