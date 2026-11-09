@@ -278,9 +278,19 @@ void setup() {
   const auto wakeupReason = gpio.getWakeupReason();
   // Up held while pressing Power: open the SD firmware picker instead of the normal UI.
   // Same combo as CrossPoint, so a USB-locked X4 always has a way to reflash.
-  gpio.update();
-  const bool recoveryFirmwareMode =
-      wakeupReason == HalGPIO::WakeupReason::PowerButton && gpio.isPressed(HalGPIO::BTN_UP);
+  // Sample for a moment: the input manager debounces, so a single update() never reports a press.
+  bool upHeld = false;
+  bool backHeld = false;
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
+    const unsigned long start = millis();
+    while (millis() - start < 60) {
+      gpio.update();
+      upHeld = gpio.isPressed(HalGPIO::BTN_UP);
+      backHeld = mappedInputManager.isPressed(MappedInputManager::Button::Back);
+      delay(10);
+    }
+  }
+  const bool recoveryFirmwareMode = upHeld;
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       // A power-button wake always boots. We don't gate on hold duration: on a battery cold-boot
@@ -305,11 +315,7 @@ void setup() {
 
   setupDisplayAndFonts();
 
-  activityManager.goToBoot();
-
-  APP_STATE.loadFromFile();
-  RECENT_BOOKS.loadFromFile();
-
+  // Before loading any saved state, so a corrupt state file cannot block recovery.
   if (recoveryFirmwareMode) {
     LOG_INF("MAIN", "Recovery firmware mode (UP + POWER held at boot)");
     activityManager.replaceActivity(
@@ -318,10 +324,15 @@ void setup() {
     return;
   }
 
+  activityManager.goToBoot();
+
+  APP_STATE.loadFromFile();
+  RECENT_BOOKS.loadFromFile();
+
   // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
   // crashed (indicated by readerActivityLoadCount > 0)
   if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-      mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
+      backHeld || APP_STATE.readerActivityLoadCount > 0) {
     activityManager.goHome();
   } else {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
