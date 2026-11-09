@@ -55,6 +55,14 @@ class XtcParser {
   size_t loadPage(uint32_t pageIndex, uint8_t* buffer, size_t bufferSize);
 
   /**
+   * Read part of a page bitmap (the data after the page header), so a page can be drawn
+   * in strips without holding the whole bitmap in RAM.
+   *
+   * @return length on success, 0 on failure
+   */
+  size_t readPageBitmap(uint32_t pageIndex, size_t byteOffset, uint8_t* buffer, size_t length);
+
+  /**
    * Streaming page load
    * Memory-efficient method that reads page data in chunks.
    *
@@ -81,10 +89,12 @@ class XtcParser {
   XtcError getLastError() const { return m_lastError; }
 
  private:
-  FsFile m_file;
+  mutable FsFile m_file;  // mutable: getPageInfo() reads page table entries from the card
   bool m_isOpen;
   XtcHeader m_header;
-  std::vector<PageInfo> m_pageTable;
+  // The page table stays on the card; the last entry read is kept here.
+  mutable uint32_t m_cachedPageIndex = UINT32_MAX;
+  mutable PageInfo m_cachedPage{};
   std::vector<ChapterInfo> m_chapters;
   std::string m_title;
   std::string m_author;

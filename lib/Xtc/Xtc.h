@@ -84,6 +84,12 @@ class Xtc {
   size_t loadPage(uint32_t pageIndex, uint8_t* buffer, size_t bufferSize) const;
 
   /**
+   * Read part of a page bitmap (after the page header) into buffer.
+   * @return length on success, 0 on failure
+   */
+  size_t readPageBitmap(uint32_t pageIndex, size_t byteOffset, uint8_t* buffer, size_t length) const;
+
+  /**
    * Load page with streaming callback
    * @param pageIndex Page index
    * @param callback Callback for each chunk

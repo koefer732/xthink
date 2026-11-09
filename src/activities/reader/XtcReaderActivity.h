@@ -11,6 +11,8 @@
 
 #include "activities/Activity.h"
 
+class XtcPageStrips;
+
 class XtcReaderActivity final : public Activity {
   std::shared_ptr<Xtc> xtc;
 
@@ -23,14 +25,11 @@ class XtcReaderActivity final : public Activity {
   int viewX = 0;          // viewport origin in magnified pixels
   int viewY = 0;
 
-  // Side-button chord (both pressed together) toggles zoom. A side-button page turn is
-  // held back for a moment so the chord can be detected before the page changes.
-  bool chordLatched = false;
-  int pendingTurn = 0;  // -1 previous, +1 next, 0 none
-  unsigned long pendingSince = 0;
+  // Set while Confirm stays held after a long press toggled zoom, so its release is ignored.
+  bool confirmLatched = false;
 
   void renderPage();
-  void drawZoomed(const uint8_t* pageBuffer, uint16_t pageWidth, uint16_t pageHeight, uint8_t bitDepth);
+  void drawZoomed(XtcPageStrips& strips, uint16_t pageWidth, uint16_t pageHeight, uint8_t bitDepth);
   void drawZoomIndicator(uint16_t pageWidth, uint16_t pageHeight) const;
   void openMenu();
   void handleMenuAction(int action);

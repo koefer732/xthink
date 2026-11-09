@@ -18,6 +18,7 @@
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "XtcPageSelectionActivity.h"
+#include "XtcPageStrips.h"
 #include "XtcReaderChapterSelectionActivity.h"
 #include "XtcReaderMenuActivity.h"
 #include "components/UITheme.h"
@@ -26,8 +27,8 @@
 namespace {
 constexpr unsigned long skipPageMs = 700;
 constexpr unsigned long goHomeMs = 1000;
-// How long a side-button page turn waits for the other side button (zoom chord).
-constexpr unsigned long chordWindowMs = 120;
+// Holding Confirm this long toggles zoom.
+constexpr unsigned long zoomHoldMs = 600;
 
 // Zoom levels as num/den: 1.5x and 2x.
 struct ZoomLevel {
@@ -74,36 +75,21 @@ void XtcReaderActivity::onExit() {
 void XtcReaderActivity::loop() {
   using Button = MappedInputManager::Button;
 
-  // Zoom chord: both side buttons together. Ignore every page button until both are released.
-  const bool sideBack = mappedInput.isPressed(Button::PageBack);
-  const bool sideForward = mappedInput.isPressed(Button::PageForward);
-  if (sideBack && sideForward) {
-    if (!chordLatched) {
-      chordLatched = true;
-      pendingTurn = 0;
-      if (zoomActive) {
-        exitZoom();
-      } else {
-        enterZoom();
-      }
+  // Holding Confirm toggles zoom. The X4 reads both side buttons (and the four front
+  // buttons) through one resistor ladder each, so two side buttons pressed together look
+  // like a single button and can't be used as a chord.
+  if (confirmLatched) {
+    if (!mappedInput.isPressed(Button::Confirm)) {
+      confirmLatched = false;
     }
     return;
   }
-  if (chordLatched) {
-    if (!sideBack && !sideForward) {
-      chordLatched = false;
-    }
-    return;
-  }
-
-  // A side-button turn that waited out the chord window happens now.
-  if (pendingTurn != 0 && millis() - pendingSince >= chordWindowMs) {
-    const int direction = pendingTurn;
-    pendingTurn = 0;
+  if (mappedInput.isPressed(Button::Confirm) && mappedInput.getHeldTime() >= zoomHoldMs) {
+    confirmLatched = true;
     if (zoomActive) {
-      zoomStep(direction);
+      exitZoom();
     } else {
-      turnPage(direction, 1);
+      enterZoom();
     }
     return;
   }
@@ -126,16 +112,14 @@ void XtcReaderActivity::loop() {
       return;
     }
     if (mappedInput.wasPressed(Button::PageForward)) {
-      pendingTurn = 1;
-      pendingSince = millis();
+      zoomStep(1);
     } else if (mappedInput.wasPressed(Button::PageBack)) {
-      pendingTurn = -1;
-      pendingSince = millis();
+      zoomStep(-1);
     }
     return;
   }
 
-  // Confirm opens the reader menu (chapters, go to page, zoom)
+  // A short press of Confirm opens the reader menu (chapters, go to page, zoom)
   if (mappedInput.wasReleased(Button::Confirm)) {
     openMenu();
     return;
@@ -159,23 +143,15 @@ void XtcReaderActivity::loop() {
       SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN && mappedInput.wasReleased(Button::Power);
 
   if (usePressForPageTurn) {
-    // Front buttons turn at once; side buttons wait briefly in case the zoom chord follows.
-    if (mappedInput.wasPressed(Button::Left)) {
+    if (mappedInput.wasPressed(Button::PageBack) || mappedInput.wasPressed(Button::Left)) {
       turnPage(-1, 1);
-    } else if (mappedInput.wasPressed(Button::Right) || powerPageTurn) {
+    } else if (mappedInput.wasPressed(Button::PageForward) || mappedInput.wasPressed(Button::Right) || powerPageTurn) {
       turnPage(1, 1);
-    } else if (mappedInput.wasPressed(Button::PageBack)) {
-      pendingTurn = -1;
-      pendingSince = millis();
-    } else if (mappedInput.wasPressed(Button::PageForward)) {
-      pendingTurn = 1;
-      pendingSince = millis();
     }
     return;
   }
 
-  // Release mode: a held button skips 10 pages. The chord latch above already swallows
-  // the releases that end a chord.
+  // Release mode: a held button skips 10 pages.
   const bool prevTriggered = mappedInput.wasReleased(Button::PageBack) || mappedInput.wasReleased(Button::Left);
   const bool nextTriggered =
       mappedInput.wasReleased(Button::PageForward) || powerPageTurn || mappedInput.wasReleased(Button::Right);
@@ -378,120 +354,76 @@ void XtcReaderActivity::renderPage() {
   const uint16_t pageHeight = xtc->getPageHeight();
   const uint8_t bitDepth = xtc->getBitDepth();
 
-  // Calculate buffer size for one page
-  // XTG (1-bit): Row-major, ((width+7)/8) * height bytes
-  // XTH (2-bit): Two bit planes, column-major, ((width * height + 7) / 8) * 2 bytes
-  size_t pageBufferSize;
-  if (bitDepth == 2) {
-    pageBufferSize = ((static_cast<size_t>(pageWidth) * pageHeight + 7) / 8) * 2;
-  } else {
-    pageBufferSize = ((pageWidth + 7) / 8) * pageHeight;
-  }
-
-  // Allocate page buffer
-  uint8_t* pageBuffer = static_cast<uint8_t*>(malloc(pageBufferSize));
-  if (!pageBuffer) {
-    LOG_ERR("XTR", "Failed to allocate page buffer (%lu bytes)", pageBufferSize);
+  // The page is read from the card in strips of a few KB instead of one 48/96 KB buffer,
+  // which often can't be allocated once a big book's chapter list is in memory.
+  XtcPageStrips strips(*xtc, currentPage, pageWidth, pageHeight);
+  if (!strips.allocated()) {
+    LOG_ERR("XTR", "Failed to allocate page strip buffer");
     renderer.clearScreen();
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_MEMORY_ERROR), true, EpdFontFamily::BOLD);
     renderer.displayBuffer();
     return;
   }
 
-  // Load page data
-  size_t bytesRead = xtc->loadPage(currentPage, pageBuffer, pageBufferSize);
-  if (bytesRead == 0) {
+  auto showLoadError = [&]() {
     LOG_ERR("XTR", "Failed to load page %lu", currentPage);
-    free(pageBuffer);
     renderer.clearScreen();
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_PAGE_LOAD_ERROR), true, EpdFontFamily::BOLD);
     renderer.displayBuffer();
-    return;
-  }
+  };
+
+  auto display = [&]() {
+    if (pagesUntilFullRefresh <= 1) {
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+    } else {
+      renderer.displayBuffer();
+      pagesUntilFullRefresh--;
+    }
+  };
 
   // Clear screen first
   renderer.clearScreen();
 
   if (zoomActive) {
-    drawZoomed(pageBuffer, pageWidth, pageHeight, bitDepth);
-    free(pageBuffer);
-    drawZoomIndicator(pageWidth, pageHeight);
-    if (pagesUntilFullRefresh <= 1) {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-      pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-    } else {
-      renderer.displayBuffer();
-      pagesUntilFullRefresh--;
+    drawZoomed(strips, pageWidth, pageHeight, bitDepth);
+    if (strips.failed()) {
+      showLoadError();
+      return;
     }
+    drawZoomIndicator(pageWidth, pageHeight);
+    display();
     LOG_DBG("XTR", "Rendered page %lu zoomed %s at %d,%d", currentPage + 1, kZoomLevels[zoomLevel].label, viewX, viewY);
     return;
   }
 
-  // Copy page bitmap using GfxRenderer's drawPixel
   // XTC/XTCH pages are pre-rendered with status bar included, so render full page
-  const uint16_t maxSrcY = pageHeight;
-
   if (bitDepth == 2) {
-    // XTH 2-bit mode: Two bit planes, column-major order
-    // - Columns scanned right to left (x = width-1 down to 0)
-    // - 8 vertical pixels per byte (MSB = topmost pixel in group)
-    // - First plane: Bit1, Second plane: Bit2
-    // - Pixel value = (bit1 << 1) | bit2
-    // - Grayscale: 0=White, 1=Dark Grey, 2=Light Grey, 3=Black
-
-    const size_t planeSize = (static_cast<size_t>(pageWidth) * pageHeight + 7) / 8;
-    const uint8_t* plane1 = pageBuffer;              // Bit1 plane
-    const uint8_t* plane2 = pageBuffer + planeSize;  // Bit2 plane
-    const size_t colBytes = (pageHeight + 7) / 8;    // Bytes per column (100 for 800 height)
-
-    // Lambda to get pixel value at (x, y)
-    auto getPixelValue = [&](uint16_t x, uint16_t y) -> uint8_t {
-      const size_t colIndex = pageWidth - 1 - x;
-      const size_t byteInCol = y / 8;
-      const size_t bitInByte = 7 - (y % 8);
-      const size_t byteOffset = colIndex * colBytes + byteInCol;
-      const uint8_t bit1 = (plane1[byteOffset] >> bitInByte) & 1;
-      const uint8_t bit2 = (plane2[byteOffset] >> bitInByte) & 1;
-      return (bit1 << 1) | bit2;
-    };
-
-    // Optimized grayscale rendering without storeBwBuffer (saves 48KB peak memory)
+    // XTH 2-bit: 0=White, 1=Dark Grey, 2=Light Grey, 3=Black. Every pass walks x in the
+    // outer loop because the page is stored by columns.
     // Flow: BW display → LSB/MSB passes → grayscale display → re-render BW for next frame
 
-    // Count pixel distribution for debugging
-    uint32_t pixelCounts[4] = {0, 0, 0, 0};
-    for (uint16_t y = 0; y < pageHeight; y++) {
-      for (uint16_t x = 0; x < pageWidth; x++) {
-        pixelCounts[getPixelValue(x, y)]++;
-      }
-    }
-    LOG_DBG("XTR", "Pixel distribution: White=%lu, DarkGrey=%lu, LightGrey=%lu, Black=%lu", pixelCounts[0],
-            pixelCounts[1], pixelCounts[2], pixelCounts[3]);
-
     // Pass 1: BW buffer - draw all non-white pixels as black
-    for (uint16_t y = 0; y < pageHeight; y++) {
-      for (uint16_t x = 0; x < pageWidth; x++) {
-        if (getPixelValue(x, y) >= 1) {
+    for (uint16_t x = 0; x < pageWidth; x++) {
+      for (uint16_t y = 0; y < pageHeight; y++) {
+        if (strips.value(x, y) >= 1) {
           renderer.drawPixel(x, y, true);
         }
       }
     }
-
-    // Display BW with conditional refresh based on pagesUntilFullRefresh
-    if (pagesUntilFullRefresh <= 1) {
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-      pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-    } else {
-      renderer.displayBuffer();
-      pagesUntilFullRefresh--;
+    if (strips.failed()) {
+      showLoadError();
+      return;
     }
+
+    display();
 
     // Pass 2: LSB buffer - mark DARK gray only (XTH value 1)
     // In LUT: 0 bit = apply gray effect, 1 bit = untouched
     renderer.clearScreen(0x00);
-    for (uint16_t y = 0; y < pageHeight; y++) {
-      for (uint16_t x = 0; x < pageWidth; x++) {
-        if (getPixelValue(x, y) == 1) {  // Dark grey only
+    for (uint16_t x = 0; x < pageWidth; x++) {
+      for (uint16_t y = 0; y < pageHeight; y++) {
+        if (strips.value(x, y) == 1) {  // Dark grey only
           renderer.drawPixel(x, y, false);
         }
       }
@@ -499,11 +431,10 @@ void XtcReaderActivity::renderPage() {
     renderer.copyGrayscaleLsbBuffers();
 
     // Pass 3: MSB buffer - mark LIGHT AND DARK gray (XTH value 1 or 2)
-    // In LUT: 0 bit = apply gray effect, 1 bit = untouched
     renderer.clearScreen(0x00);
-    for (uint16_t y = 0; y < pageHeight; y++) {
-      for (uint16_t x = 0; x < pageWidth; x++) {
-        const uint8_t pv = getPixelValue(x, y);
+    for (uint16_t x = 0; x < pageWidth; x++) {
+      for (uint16_t y = 0; y < pageHeight; y++) {
+        const uint8_t pv = strips.value(x, y);
         if (pv == 1 || pv == 2) {  // Dark grey or Light grey
           renderer.drawPixel(x, y, false);
         }
@@ -516,9 +447,9 @@ void XtcReaderActivity::renderPage() {
 
     // Pass 4: Re-render BW to framebuffer (restore for next frame, instead of restoreBwBuffer)
     renderer.clearScreen();
-    for (uint16_t y = 0; y < pageHeight; y++) {
-      for (uint16_t x = 0; x < pageWidth; x++) {
-        if (getPixelValue(x, y) >= 1) {
+    for (uint16_t x = 0; x < pageWidth; x++) {
+      for (uint16_t y = 0; y < pageHeight; y++) {
+        if (strips.value(x, y) >= 1) {
           renderer.drawPixel(x, y, true);
         }
       }
@@ -527,69 +458,41 @@ void XtcReaderActivity::renderPage() {
     // Cleanup grayscale buffers with current frame buffer
     renderer.cleanupGrayscaleWithFrameBuffer();
 
-    free(pageBuffer);
-
     LOG_DBG("XTR", "Rendered page %lu/%lu (2-bit grayscale)", currentPage + 1, xtc->getPageCount());
     return;
-  } else {
-    // 1-bit mode: 8 pixels per byte, MSB first
-    const size_t srcRowBytes = (pageWidth + 7) / 8;  // 60 bytes for 480 width
+  }
 
-    for (uint16_t srcY = 0; srcY < maxSrcY; srcY++) {
-      const size_t srcRowStart = srcY * srcRowBytes;
-
-      for (uint16_t srcX = 0; srcX < pageWidth; srcX++) {
-        // Read source pixel (MSB first, bit 7 = leftmost pixel)
-        const size_t srcByte = srcRowStart + srcX / 8;
-        const size_t srcBit = 7 - (srcX % 8);
-        const bool isBlack = !((pageBuffer[srcByte] >> srcBit) & 1);  // XTC: 0 = black, 1 = white
-
-        if (isBlack) {
-          renderer.drawPixel(srcX, srcY, true);
-        }
+  // 1-bit mode: rows of 8 pixels per byte, MSB first
+  for (uint16_t y = 0; y < pageHeight; y++) {
+    for (uint16_t x = 0; x < pageWidth; x++) {
+      if (strips.isBlack(x, y)) {
+        renderer.drawPixel(x, y, true);
       }
     }
   }
-  // White pixels are already cleared by clearScreen()
-
-  free(pageBuffer);
-
-  // XTC pages already have status bar pre-rendered, no need to add our own
-
-  // Display with appropriate refresh
-  if (pagesUntilFullRefresh <= 1) {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-  } else {
-    renderer.displayBuffer();
-    pagesUntilFullRefresh--;
+  if (strips.failed()) {
+    showLoadError();
+    return;
   }
+
+  display();
 
   LOG_DBG("XTR", "Rendered page %lu/%lu (%u-bit)", currentPage + 1, xtc->getPageCount(), bitDepth);
 }
 
-void XtcReaderActivity::drawZoomed(const uint8_t* pageBuffer, const uint16_t pageWidth, const uint16_t pageHeight,
+void XtcReaderActivity::drawZoomed(XtcPageStrips& strips, const uint16_t pageWidth, const uint16_t pageHeight,
                                    const uint8_t bitDepth) {
   // Nearest-neighbour magnification of the visible part of the page. Grey levels are
   // shown in black and white here: dark grey and black become black.
   const auto& z = kZoomLevels[zoomLevel];
   if (bitDepth == 2) {
-    const size_t planeSize = (static_cast<size_t>(pageWidth) * pageHeight + 7) / 8;
-    const uint8_t* plane1 = pageBuffer;
-    const uint8_t* plane2 = pageBuffer + planeSize;
-    const size_t colBytes = (pageHeight + 7) / 8;
-    for (uint16_t sy = 0; sy < pageHeight; sy++) {
-      const uint32_t srcY = static_cast<uint32_t>(viewY + sy) * z.den / z.num;
-      if (srcY >= pageHeight) break;
-      const size_t byteInCol = srcY / 8;
-      const uint8_t bitInByte = 7 - (srcY % 8);
-      for (uint16_t sx = 0; sx < pageWidth; sx++) {
-        const uint32_t srcX = static_cast<uint32_t>(viewX + sx) * z.den / z.num;
-        if (srcX >= pageWidth) break;
-        const size_t byteOffset = (pageWidth - 1 - srcX) * colBytes + byteInCol;
-        const uint8_t bit1 = (plane1[byteOffset] >> bitInByte) & 1;
-        const uint8_t bit2 = (plane2[byteOffset] >> bitInByte) & 1;
-        const uint8_t value = (bit1 << 1) | bit2;  // 0 white, 1 dark grey, 2 light grey, 3 black
+    for (uint16_t sx = 0; sx < pageWidth; sx++) {
+      const uint32_t srcX = static_cast<uint32_t>(viewX + sx) * z.den / z.num;
+      if (srcX >= pageWidth) break;
+      for (uint16_t sy = 0; sy < pageHeight; sy++) {
+        const uint32_t srcY = static_cast<uint32_t>(viewY + sy) * z.den / z.num;
+        if (srcY >= pageHeight) break;
+        const uint8_t value = strips.value(srcX, srcY);  // 0 white, 1 dark grey, 2 light grey, 3 black
         if (value == 1 || value == 3) {
           renderer.drawPixel(sx, sy, true);
         }
@@ -598,16 +501,13 @@ void XtcReaderActivity::drawZoomed(const uint8_t* pageBuffer, const uint16_t pag
     return;
   }
 
-  const size_t srcRowBytes = (pageWidth + 7) / 8;
   for (uint16_t sy = 0; sy < pageHeight; sy++) {
     const uint32_t srcY = static_cast<uint32_t>(viewY + sy) * z.den / z.num;
     if (srcY >= pageHeight) break;
-    const uint8_t* row = pageBuffer + srcY * srcRowBytes;
     for (uint16_t sx = 0; sx < pageWidth; sx++) {
       const uint32_t srcX = static_cast<uint32_t>(viewX + sx) * z.den / z.num;
       if (srcX >= pageWidth) break;
-      const bool isBlack = !((row[srcX / 8] >> (7 - (srcX % 8))) & 1);  // XTC: 0 = black, 1 = white
-      if (isBlack) {
+      if (strips.isBlack(srcX, srcY)) {
         renderer.drawPixel(sx, sy, true);
       }
     }
