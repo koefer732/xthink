@@ -233,6 +233,9 @@ void setupDisplayAndFonts() {
 }
 
 void setup() {
+  // Must be first: on X4 boards that do not self-latch, power is cut as soon as the
+  // power button is released unless the firmware holds the battery latch.
+  HalPowerManager::holdBatteryLatch();
   t1 = millis();
 
   HalSystem::begin();

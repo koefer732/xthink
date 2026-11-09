@@ -10,6 +10,17 @@
 
 HalPowerManager powerManager;  // Singleton instance
 
+// GPIO13 gates the X4 battery MOSFET (and the SD power rail on the X3).
+static constexpr gpio_num_t BATTERY_LATCH_GPIO = GPIO_NUM_13;
+
+void HalPowerManager::holdBatteryLatch() {
+  // The sleep path below latches this pin LOW with gpio_hold_en, and that hold can survive
+  // a reset or a USB-powered deep-sleep wake, silently ignoring the write. Release it first.
+  gpio_hold_dis(BATTERY_LATCH_GPIO);
+  gpio_set_direction(BATTERY_LATCH_GPIO, GPIO_MODE_OUTPUT);
+  gpio_set_level(BATTERY_LATCH_GPIO, 1);
+}
+
 void HalPowerManager::begin() {
   if (gpio.deviceIsX3()) {
     // X3 uses an I2C fuel gauge for battery monitoring.
@@ -69,7 +80,8 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   // Pre-sleep routines from the original firmware
   // GPIO13 is connected to battery latch MOSFET, we need to make sure it's low during sleep
   // Note that this means the MCU will be completely powered off during sleep, including RTC
-  constexpr gpio_num_t GPIO_SPIWP = GPIO_NUM_13;
+  constexpr gpio_num_t GPIO_SPIWP = BATTERY_LATCH_GPIO;
+  gpio_hold_dis(GPIO_SPIWP);  // a held pad ignores the drive below
   gpio_set_direction(GPIO_SPIWP, GPIO_MODE_OUTPUT);
   gpio_set_level(GPIO_SPIWP, 0);
   esp_sleep_config_gpio_isolate();

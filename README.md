@@ -69,8 +69,11 @@ card. This build keeps that path open:
 
 1. Install [CrossPoint](https://github.com/crosspoint-reader/crosspoint-reader)
    first with its SD installer (or the OTA Unlocker), if it is not there yet.
-2. Copy **`firmware.bin`** (the app image, **not** the merged image) to the root
-   of the FAT32 SD card. Any name ending in `.bin` works.
+2. Copy this fork's **`firmware.bin`** (the app image built from this
+   repository, **not** the merged image) to the FAT32 SD card, in the root or in
+   `/firmware`. Any name ending in `.bin` works. Do **not** use the upstream
+   Shortbread release linked above on a locked unit: it has no SD update path
+   and does not hold the battery latch, so it can leave the device stuck.
 3. In CrossPoint open **Settings → System → SD Card Firmware Update** (or hold
    **Up** while pressing **Power**), pick the file and confirm. Do not power off.
 
