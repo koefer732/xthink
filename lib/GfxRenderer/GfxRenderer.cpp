@@ -852,7 +852,12 @@ void GfxRenderer::displayBuffer(const HalDisplay::RefreshMode refreshMode) const
   if (inverted) {
     invertScreen();
   }
-  display.displayBuffer(refreshMode, fadingFix);
+  auto mode = refreshMode;
+  if (promoteNextRefresh_) {
+    promoteNextRefresh_ = false;
+    if (mode == HalDisplay::FAST_REFRESH) mode = HalDisplay::HALF_REFRESH;
+  }
+  display.displayBuffer(mode, fadingFix);
   if (inverted) {
     // Restore so the next frame's drawing starts from a clean (non-inverted) state
     invertScreen();
