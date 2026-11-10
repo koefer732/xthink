@@ -597,6 +597,13 @@ size_t Xtc::loadPage(uint32_t pageIndex, uint8_t* buffer, size_t bufferSize) con
   return const_cast<xtc::XtcParser*>(parser.get())->loadPage(pageIndex, buffer, bufferSize);
 }
 
+size_t Xtc::readPageBitmap(uint32_t pageIndex, size_t byteOffset, uint8_t* buffer, size_t length) const {
+  if (!loaded || !parser) {
+    return 0;
+  }
+  return const_cast<xtc::XtcParser*>(parser.get())->readPageBitmap(pageIndex, byteOffset, buffer, length);
+}
+
 xtc::XtcError Xtc::loadPageStreaming(uint32_t pageIndex,
                                      std::function<void(const uint8_t* data, size_t size, size_t offset)> callback,
                                      size_t chunkSize) const {

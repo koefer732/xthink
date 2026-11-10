@@ -22,8 +22,10 @@
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/OtaBootSwitch.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -231,10 +233,16 @@ void setupDisplayAndFonts() {
 }
 
 void setup() {
+  // Must be first: on X4 boards that do not self-latch, power is cut as soon as the
+  // power button is released unless the firmware holds the battery latch.
+  HalPowerManager::holdBatteryLatch();
   t1 = millis();
 
   HalSystem::begin();
   gpio.begin();
+  // Back + Up held at power-on: reboot into the other OTA slot (the previous firmware).
+  // First thing after GPIO init so it still works if later boot code is broken.
+  ota_boot::checkEscapeCombo();
   powerManager.begin();
 
 #ifdef ENABLE_SERIAL_LOG
@@ -268,6 +276,21 @@ void setup() {
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
   const auto wakeupReason = gpio.getWakeupReason();
+  // Up held while pressing Power: open the SD firmware picker instead of the normal UI.
+  // Same combo as CrossPoint, so a USB-locked X4 always has a way to reflash.
+  // Sample for a moment: the input manager debounces, so a single update() never reports a press.
+  bool upHeld = false;
+  bool backHeld = false;
+  if (wakeupReason == HalGPIO::WakeupReason::PowerButton) {
+    const unsigned long start = millis();
+    while (millis() - start < 60) {
+      gpio.update();
+      upHeld = gpio.isPressed(HalGPIO::BTN_UP);
+      backHeld = mappedInputManager.isPressed(MappedInputManager::Button::Back);
+      delay(10);
+    }
+  }
+  const bool recoveryFirmwareMode = upHeld;
   switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       // A power-button wake always boots. We don't gate on hold duration: on a battery cold-boot
@@ -292,6 +315,15 @@ void setup() {
 
   setupDisplayAndFonts();
 
+  // Before loading any saved state, so a corrupt state file cannot block recovery.
+  if (recoveryFirmwareMode) {
+    LOG_INF("MAIN", "Recovery firmware mode (UP + POWER held at boot)");
+    activityManager.replaceActivity(
+        std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+    waitForPowerRelease();
+    return;
+  }
+
   activityManager.goToBoot();
 
   APP_STATE.loadFromFile();
@@ -300,7 +332,7 @@ void setup() {
   // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
   // crashed (indicated by readerActivityLoadCount > 0)
   if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-      mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
+      backHeld || APP_STATE.readerActivityLoadCount > 0) {
     activityManager.goHome();
   } else {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load

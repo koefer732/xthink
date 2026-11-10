@@ -36,6 +36,9 @@ class GfxRenderer {
   Orientation orientation;
   bool fadingFix;
   bool inverted = false;
+  // Set when the screen content is about to be replaced wholesale (activity change); the next
+  // FAST_REFRESH is promoted to HALF_REFRESH so the previous screen does not ghost through.
+  mutable bool promoteNextRefresh_ = false;
   uint8_t* frameBuffer = nullptr;
   uint16_t panelWidth = HalDisplay::DISPLAY_WIDTH;
   uint16_t panelHeight = HalDisplay::DISPLAY_HEIGHT;
@@ -80,6 +83,7 @@ class GfxRenderer {
 
   // Fading fix control
   void setFadingFix(const bool enabled) { fadingFix = enabled; }
+  void requestCleanRefresh() const { promoteNextRefresh_ = true; }
 
   // Global display invert: XOR the entire framebuffer at push time.
   void setInverted(const bool enabled) { inverted = enabled; }
