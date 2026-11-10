@@ -34,6 +34,12 @@ class HalPowerManager {
 
   void begin();
 
+  // Drive the GPIO13 battery latch HIGH so the device stays powered after the power
+  // button is released. Some X4 hardware revisions do not self-latch and stay on only
+  // while the button is held; on self-latching units this is a no-op. Call first thing
+  // in setup(). (Mirrors CrossPoint's BoardConfig::holdPowerRails().)
+  static void holdBatteryLatch();
+
   // Control CPU frequency for power saving
   void setPowerSaving(bool enabled);
 

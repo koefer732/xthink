@@ -73,6 +73,7 @@ void ActivityManager::loop() {
       // Destroy the current activity
       exitActivity(lock);
       pendingAction = PendingAction::None;
+      renderer.requestCleanRefresh();  // screen changes wholesale: avoid ghosting
 
       if (stackActivities.empty()) {
         LOG_DBG("ACT", "No more activities on stack, going home");
@@ -123,6 +124,7 @@ void ActivityManager::loop() {
       }
       pendingAction = PendingAction::None;
       currentActivity = std::move(pendingActivity);
+      renderer.requestCleanRefresh();  // screen changes wholesale: avoid ghosting
 
       lock.unlock();  // onEnter may acquire its own lock
       currentActivity->onEnter();
